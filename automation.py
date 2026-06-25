@@ -34,13 +34,12 @@ CHECK_INTERVAL_SECONDS = 60 * 60 * 24  # 1 day
 SEARCH_URLS = [
     "https://datasoft-bd.com",
     "https://brainstation-23.easy.jobs/",
-    "https://southtechgroup.com",
+    "https://career.southtechgroup.com/"
     "https://tigerit.com",
-    "https://riseuplabs.com",
-    "https://nascenia.com",
-    "https://cefalo.com",
-    "https://riseuplabs.com",
-    "https://enosisbd.com",
+    "https://riseuplabs.com/jobs/",
+    "https://nascenia.com/category/career/",
+    "https://career.cefalo.com/#jobs"
+    "https://enosisbd.pinpointhq.com/#js-careers-jobs-block",
     "https://genexinfosys.com/position.php"
 ]
 # Only match vacancy postings for these roles.
