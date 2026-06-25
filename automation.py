@@ -288,8 +288,7 @@ def send_whatsapp_notifications(jobs: list[dict[str, str]]) -> None:
 
 
 def check_for_new_jobs() -> list[dict[str, Any]]:
-    seen_ids: set[str] = set()
-    new_jobs: list[dict[str, Any]] = []
+    all_jobs: list[dict[str, Any]] = []
 
     for url in SEARCH_URLS:
         try:
@@ -302,11 +301,7 @@ def check_for_new_jobs() -> list[dict[str, Any]]:
         logging.info("Found %d candidate posts on %s", len(jobs), url)
 
         for job in jobs:
-            job_id = build_job_id(job["title"], job["url"])
-            if job_id in seen_ids:
-                continue
-            seen_ids.add(job_id)
-            new_jobs.append(
+            all_jobs.append(
                 {
                     "title": job["title"],
                     "url": job["url"],
@@ -315,44 +310,21 @@ def check_for_new_jobs() -> list[dict[str, Any]]:
                 }
             )
 
-    # Don't automatically send WhatsApp notifications - let user send manually from HTML report
-    # if new_jobs:
-    #     send_whatsapp_notifications(new_jobs)
-
-    return new_jobs
+    return all_jobs
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Daily website job watcher with WhatsApp link alerts.")
-    parser.add_argument(
-        "--loop",
-        action="store_true",
-        help="Keep running and check once per day.",
-    )
-    parser.add_argument(
-        "--interval",
-        type=int,
-        default=CHECK_INTERVAL_SECONDS,
-        help="Interval between checks in seconds when --loop is enabled.",
-    )
+    parser = argparse.ArgumentParser(description="Daily website job watcher.")
     return parser.parse_args()
 
 
 def main() -> None:
-    args = parse_args()
-
-    while True:
-        jobs = check_for_new_jobs()
-        if not jobs:
-            logging.info("No matching jobs found; skipping report generation.")
-        else:
-            build_html_report(jobs)
-
-        if not args.loop:
-            break
-
-        logging.info("Waiting %d seconds for the next check.", args.interval)
-        time.sleep(args.interval)
+    jobs = check_for_new_jobs()
+    if not jobs:
+        logging.info("No matching jobs found.")
+    else:
+        build_html_report(jobs)
+        logging.info("Report generated with %d jobs", len(jobs))
 
 
 if __name__ == "__main__":
