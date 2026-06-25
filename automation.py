@@ -15,8 +15,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import html
-import json
 import logging
+import re
 import time
 import webbrowser
 from pathlib import Path
@@ -27,26 +27,68 @@ import requests
 from bs4 import BeautifulSoup
 
 BASE_DIR = Path(__file__).resolve().parent
-SEEN_FILE = BASE_DIR / "seen_jobs.json"
-REPORT_FILE = BASE_DIR / "job_report.html"
+REPORT_FILE = BASE_DIR / "index.html"
 CHECK_INTERVAL_SECONDS = 60 * 60 * 24  # 1 day
 
 # Configure your target pages here.
 SEARCH_URLS = [
-    "https://bjitgroup.com/career",
+    "https://datasoft-bd.com",
+    "https://brainstation-23.easy.jobs/",
+    "https://southtechgroup.com",
+    "https://tigerit.com",
+    "https://riseuplabs.com",
+    "https://nascenia.com",
+    "https://cefalo.com",
+    "https://riseuplabs.com",
+    "https://enosisbd.com",
+    "https://genexinfosys.com/position.php"
 ]
-
-# Add words that identify the jobs you care about.
-JOB_KEYWORDS = [
-    "job",
-    "vacancy",
-    "career",
-    "hiring",
-    "developer",
-    "engineer",
-    "python",
-    "devops",
-    "it",
+# Only match vacancy postings for these roles.
+JOB_TITLE_PATTERNS = [
+    r"\bdevops engineer\b",
+    r"\bnetwork engineer\b",
+    r"\bSoftware QA Engineer\b",
+    r"\bSr. DevOps Engineer\b",
+    r"\bit engineer\b",
+    r"\bcloud engineer\b",
+    r"\bsite reliability engineer\b",
+    r"\bsupport engineer\b",
+    r"\bsr\.\s+\w+\s+engineer\b",  # Generic: Sr. {something} Engineer
+    r"\b\w+\s+engineer\b",  # Generic: {something} Engineer
+    r"\b\w+\s+developer\b",  # Generic: {something} Developer
+]
+JOB_TITLE_REGEX = [re.compile(pattern, re.IGNORECASE) for pattern in JOB_TITLE_PATTERNS]
+JOB_CONTEXT_PATTERNS = [
+    r"\bcareer\b",
+    r"\bcareers\b",
+    r"\bjob\b",
+    r"\bvacancy\b",
+    r"\bvacancies\b",
+    r"\bopening\b",
+    r"\bopenings\b",
+    r"\bposition\b",
+    r"\bapply\b",
+    r"\bopportunity\b",
+    r"\bhiring\b",
+    r"\brecruit\b",
+    r"\bjoin us\b",
+    r"\bjoin our team\b",
+    r"\bwork with us\b",
+    r"\bjobs\b",
+]
+JOB_CONTEXT_REGEX = [re.compile(pattern, re.IGNORECASE) for pattern in JOB_CONTEXT_PATTERNS]
+JOB_URL_SEGMENTS = [
+    "/career",
+    "/careers",
+    "/job",
+    "/jobs",
+    "/vacancy",
+    "/vacancies",
+    "/apply",
+    "/opening",
+    "/openings",
+    "/position",
+    "/hiring",
 ]
 
 # If you want a WhatsApp message pre-addressed to a specific phone,
@@ -66,27 +108,13 @@ logging.basicConfig(
 )
 
 
-def load_seen_jobs() -> dict[str, Any]:
-    if not SEEN_FILE.exists():
-        return {}
-    try:
-        return json.loads(SEEN_FILE.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        logging.warning("Seen jobs file is corrupt; rebuilding it.")
-        return {}
-
-
-def save_seen_jobs(data: dict[str, Any]) -> None:
-    SEEN_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-
-
 def format_timestamp(timestamp: int) -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
 
 
-def build_html_report(jobs: dict[str, Any]) -> None:
+def build_html_report(jobs: list[dict[str, Any]]) -> None:
     rows: list[str] = []
-    for job_id, job in sorted(jobs.items(), key=lambda item: item[1].get("first_seen", 0), reverse=True):
+    for job in sorted(jobs, key=lambda job: job.get("first_seen", 0), reverse=True):
         title = html.escape(job["title"])
         url = html.escape(job["url"])
         source = html.escape(job.get("source", ""))
@@ -161,43 +189,75 @@ def build_job_id(title: str, url: str) -> str:
     return digest
 
 
+def normalize_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text.strip().lower())
+
+
+def has_job_title(text: str) -> bool:
+    return any(regex.search(text) for regex in JOB_TITLE_REGEX)
+
+
+def has_job_context(text: str) -> bool:
+    return any(regex.search(text) for regex in JOB_CONTEXT_REGEX)
+
+
+def is_job_link(text: str, href: str) -> bool:
+    normalized_text = normalize_text(text)
+    normalized_href = href.lower()
+
+    title_in_text = has_job_title(normalized_text)
+    context_in_text = has_job_context(normalized_text)
+    title_in_href = has_job_title(normalized_href)
+    context_in_href = has_job_context(normalized_href)
+    
+    # Check for allowed path patterns (handles both absolute and relative URLs)
+    allowed_path = any(
+        segment in normalized_href or segment.lstrip("/") in normalized_href
+        for segment in JOB_URL_SEGMENTS
+    )
+
+    return (
+        (title_in_text and (context_in_text or allowed_path))
+        or (title_in_href and (context_in_text or context_in_href or allowed_path))
+    )
+
+
 def extract_job_posts(html: str, base_url: str) -> list[dict[str, str]]:
     soup = BeautifulSoup(html, "html.parser")
     candidates: list[dict[str, str]] = []
 
+    # Extract jobs from links (original logic)
     for link in soup.find_all("a", href=True):
         text = link.get_text(separator=" ", strip=True)
         if not text:
             continue
-        lower = text.lower()
-        if any(keyword.lower() in lower for keyword in JOB_KEYWORDS):
-            href = link["href"].strip()
-            full_url = urljoin(base_url, href)
+        href = link["href"].strip()
+        if not is_job_link(text, href):
+            continue
+
+        full_url = urljoin(base_url, href)
+        candidates.append(
+            {
+                "title": text,
+                "url": full_url,
+            }
+        )
+
+    # Also extract jobs from headings (h1, h2, h3, h4) that match job title patterns
+    for heading in soup.find_all(["h1", "h2", "h3", "h4"]):
+        text = heading.get_text(separator=" ", strip=True)
+        if not text or len(text) < 3:
+            continue
+        
+        normalized_text = normalize_text(text)
+        # Check if this heading contains a job title
+        if has_job_title(normalized_text):
             candidates.append(
                 {
                     "title": text,
-                    "url": full_url,
+                    "url": base_url,
                 }
             )
-
-    for heading_tag in ["h1", "h2", "h3", "h4", "h5", "h6"]:
-        for heading in soup.find_all(heading_tag):
-            text = heading.get_text(separator=" ", strip=True)
-            if not text:
-                continue
-            lower = text.lower()
-            if any(keyword.lower() in lower for keyword in JOB_KEYWORDS):
-                anchor = heading.find_parent("a")
-                if anchor and anchor.get("href"):
-                    full_url = urljoin(base_url, anchor["href"].strip())
-                else:
-                    full_url = base_url
-                candidates.append(
-                    {
-                        "title": text,
-                        "url": full_url,
-                    }
-                )
 
     unique: dict[str, dict[str, str]] = {}
     for job in candidates:
@@ -214,15 +274,24 @@ def build_whatsapp_url(message: str) -> str:
     return f"https://web.whatsapp.com/send?text={encoded}"
 
 
-def send_whatsapp_notification(job: dict[str, str]) -> None:
-    message = f"New job found: {job['title']}\n{job['url']}"
+def send_whatsapp_notifications(jobs: list[dict[str, str]]) -> None:
+    if not jobs:
+        return
+
+    lines: list[str] = []
+    for index, job in enumerate(jobs, start=1):
+        lines.append(f"{index}. {job['title']}\n{job['url']}")
+
+    message = "New jobs found:\n\n" + "\n\n".join(lines)
     whatsapp_url = build_whatsapp_url(message)
-    logging.info("New job detected: %s", job["title"])
-    logging.info("Opening WhatsApp link: %s", whatsapp_url)
+    logging.info("Opening WhatsApp link for %d new jobs", len(jobs))
     webbrowser.open(whatsapp_url)
 
 
-def check_for_new_jobs(seen_jobs: dict[str, Any]) -> dict[str, Any]:
+def check_for_new_jobs() -> list[dict[str, Any]]:
+    seen_ids: set[str] = set()
+    new_jobs: list[dict[str, Any]] = []
+
     for url in SEARCH_URLS:
         try:
             html = fetch_page(url)
@@ -235,17 +304,23 @@ def check_for_new_jobs(seen_jobs: dict[str, Any]) -> dict[str, Any]:
 
         for job in jobs:
             job_id = build_job_id(job["title"], job["url"])
-            if job_id in seen_jobs:
+            if job_id in seen_ids:
                 continue
-            seen_jobs[job_id] = {
-                "title": job["title"],
-                "url": job["url"],
-                "source": url,
-                "first_seen": int(time.time()),
-            }
-            send_whatsapp_notification(job)
+            seen_ids.add(job_id)
+            new_jobs.append(
+                {
+                    "title": job["title"],
+                    "url": job["url"],
+                    "source": url,
+                    "first_seen": int(time.time()),
+                }
+            )
 
-    return seen_jobs
+    # Don't automatically send WhatsApp notifications - let user send manually from HTML report
+    # if new_jobs:
+    #     send_whatsapp_notifications(new_jobs)
+
+    return new_jobs
 
 
 def parse_args() -> argparse.Namespace:
@@ -266,12 +341,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    seen_jobs = load_seen_jobs()
 
     while True:
-        seen_jobs = check_for_new_jobs(seen_jobs)
-        save_seen_jobs(seen_jobs)
-        build_html_report(seen_jobs)
+        jobs = check_for_new_jobs()
+        if not jobs:
+            logging.info("No matching jobs found; skipping report generation.")
+        else:
+            build_html_report(jobs)
 
         if not args.loop:
             break
